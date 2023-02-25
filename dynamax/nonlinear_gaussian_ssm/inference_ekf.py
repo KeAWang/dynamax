@@ -118,7 +118,9 @@ def extended_kalman_filter(
     # Dynamics and emission functions and their Jacobians
     f, h = params.dynamics_function, params.emission_function
     F, H = jacfwd(f), jacfwd(h)
+    # if inputs==None, assume these functions only take in x
     f, h, F, H = (_process_fn(fn, inputs) for fn in (f, h, F, H))
+    # if inputs==None, create a sequence of zeros as inputs
     inputs = _process_input(inputs, num_timesteps)
 
     def _step(carry, t):
