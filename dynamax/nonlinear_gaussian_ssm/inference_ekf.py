@@ -25,8 +25,8 @@ _process_input = lambda x, y: jnp.zeros((y,1)) if x is None else x
 def _predict(m, P, f, F, Q, u):
     r"""Predict next mean and covariance using first-order additive EKF
 
-        p(z_{t+1}) = \int N(z_t | m, S) N(z_{t+1} | f(z_t, u), Q)
-                    = N(z_{t+1} | f(m, u), F(m, u) S F(m, u)^T + Q)
+        p(z_{t+1}) = \int N(z_t | m, P) N(z_{t+1} | f(z_t, u), Q)
+                    = N(z_{t+1} | f(m, u), F(m, u) P F(m, u)^T + Q)
 
     Args:
         m (D_hid,): prior mean.
@@ -51,14 +51,14 @@ def _condition_on(m, P, h, H, R, u, y, num_iter):
 
        p(z_t | y_t, u_t, y_{1:t-1}, u_{1:t-1})
          propto p(z_t | y_{1:t-1}, u_{1:t-1}) p(y_t | z_t, u_t)
-         = N(z_t | m, S) N(y_t | h_t(z_t, u_t), R_t)
-         = N(z_t | mm, SS)
+         = N(z_t | m, P) N(y_t | h_t(z_t, u_t), R_t)
+         = N(z_t | mm, PP)
      where
          mm = m + K*(y - yhat) = mu_cond
          yhat = h(m, u)
          S = R + H(m,u) * P * H(m,u)'
          K = P * H(m, u)' * S^{-1}
-         SS = P - K * S * K' = Sigma_cond
+         PP = P - K * S * K' = Sigma_cond
      **Note! This can be done more efficiently when R is diagonal.**
 
     Args:
