@@ -10,7 +10,14 @@ from dynamax.nonlinear_gaussian_ssm.models import ParamsNLGSSM
 from dynamax.linear_gaussian_ssm.inference import PosteriorGSSMFiltered, PosteriorGSSMSmoothed
 
 # Helper functions
-_get_params = lambda x, dim, t: x[t] if x.ndim == dim + 1 else x
+# _get_params = lambda x, dim, t: x[t] if x.ndim == dim + 1 else x
+def _get_params(x, dim, t):
+    if callable(x):
+        return x(t)
+    elif x.ndim == dim + 1:
+        return x[t]
+    else:
+        return x
 _process_fn = lambda f, u: (lambda x, y: f(x)) if u is None else f
 _process_input = lambda x, y: jnp.zeros((y,1)) if x is None else x
 
