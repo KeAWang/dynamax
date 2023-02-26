@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import jax.random as jr
 from jax import lax
 from jax import jacfwd
 from tensorflow_probability.substrates.jax.distributions import MultivariateNormalFullCovariance as MVN
@@ -8,6 +9,7 @@ from typing import List, Optional
 from dynamax.utils.utils import psd_solve
 from dynamax.nonlinear_gaussian_ssm.models import ParamsNLGSSM
 from dynamax.linear_gaussian_ssm.inference import PosteriorGSSMFiltered, PosteriorGSSMSmoothed
+from dynamax.types import PRNGKey
 
 # Helper functions
 # _get_params = lambda x, dim, t: x[t] if x.ndim == dim + 1 else x
@@ -292,3 +294,60 @@ def iterated_extended_kalman_smoother(
 
     smoothed_posterior, _ = lax.scan(_step, None, jnp.arange(num_iter))
     return smoothed_posterior
+
+def extended_kalman_posterior_sample(
+    key: PRNGKey,
+    params: ParamsNLGSSM,
+    emissions:  Float[Array, "ntime emission_dim"],
+    num_iter: int = 1,
+    inputs: Optional[Float[Array, "ntime input_dim"]]=None
+) -> Float[Array, "ntime state_dim"]:
+    r"""Run forward-filtering, backward-sampling to draw samples from $p(z_{1:T} \mid y_{1:T}, u_{1:T})$.
+
+    Args:
+        key: random number key.
+        params: parameters.
+        emissions: sequence of observations.
+        num_iter (int): number of re-linearizations around posterior for update step.
+        inputs: optional sequence of inptus.
+
+    Returns:
+        Float[Array, "ntime state_dim"]: one sample of $z_{1:T}$ from the posterior distribution on latent states.
+    """
+    num_timesteps = len(emissions)
+    inputs = jnp.zeros((num_timesteps, 0)) if inputs is None else inputs
+
+    # Run the Extended Kalman filter
+    filtered_posterior = extended_kalman_filter(params, emissions, num_iter, inputs)
+    ll, filtered_means, filtered_covs, *_ = filtered_posterior
+
+    # Sample backward in time
+    def _step(carry, args):
+        next_state = carry
+        key, filtered_mean, filtered_cov, t = args
+
+        # Shorthand: get parameters and inputs for time index t
+        f = _get_params(params.dynamics_function, 2, t)
+        F = jacfwd(f)
+        f, F = (_process_fn(fn, inputs) for fn in (f, F))
+        Q = _get_params(params.dynamics_covariance, 2, t)
+        u = inputs[t]
+
+        # Condition on next state
+        smoothed_mean, smoothed_cov = _condition_on(filtered_mean, filtered_cov, f, F, Q, u, next_state, num_iter)
+        state = MVN(smoothed_mean, smoothed_cov).sample(seed=key)
+        return state, state
+
+    # Initialize the last state
+    key, this_key = jr.split(key, 2)
+    last_state = MVN(filtered_means[-1], filtered_covs[-1]).sample(seed=this_key)
+
+    args = (
+        jr.split(key, num_timesteps - 1),
+        filtered_means[:-1][::-1],
+        filtered_covs[:-1][::-1],
+        jnp.arange(num_timesteps - 2, -1, -1),
+    )
+    _, reversed_states = lax.scan(_step, last_state, args)
+    states = jnp.row_stack([reversed_states[::-1], last_state])
+    return states
