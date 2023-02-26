@@ -18,7 +18,9 @@ def _get_params(x, dim, t):
         return x[t]
     else:
         return x
+# if inputs==None, assume these functions only take in x
 _process_fn = lambda f, u: (lambda x, y: f(x)) if u is None else f
+# if inputs==None, create a sequence of zeros as inputs
 _process_input = lambda x, y: jnp.zeros((y,1)) if x is None else x
 
 
@@ -115,17 +117,21 @@ def extended_kalman_filter(
     """
     num_timesteps = len(emissions)
 
-    # Dynamics and emission functions and their Jacobians
-    f, h = params.dynamics_function, params.emission_function
-    F, H = jacfwd(f), jacfwd(h)
-    # if inputs==None, assume these functions only take in x
-    f, h, F, H = (_process_fn(fn, inputs) for fn in (f, h, F, H))
-    # if inputs==None, create a sequence of zeros as inputs
     inputs = _process_input(inputs, num_timesteps)
 
     def _step(carry, t):
         ll, pred_mean, pred_cov = carry
 
+        # Dynamics and emission functions and their Jacobians
+        # TODO: make _get_params more robust.
+        # if dynamics_function has 1 argument, we should assume it's the time argument
+        # if it has two arguments, we should assume it takes in x, u
+        # otherwise if it's not a callable, we should index it
+        # same for emission function
+        f = _get_params(params.dynamics_function, 2, t)
+        h = _get_params(params.emission_function, 2, t)
+        F, H = jacfwd(f), jacfwd(h)
+        f, h, F, H = (_process_fn(fn, inputs) for fn in (f, h, F, H))
         # Get parameters and inputs for time index t
         Q = _get_params(params.dynamics_covariance, 2, t)
         R = _get_params(params.emission_covariance, 2, t)
@@ -216,9 +222,6 @@ def extended_kalman_smoother(
     filtered_covs = filtered_posterior.filtered_covariances
 
     # Dynamics and emission functions and their Jacobians
-    f = params.dynamics_function
-    F = jacfwd(f)
-    f, F = (_process_fn(fn, inputs) for fn in (f, F))
     inputs = _process_input(inputs, num_timesteps)
 
     def _step(carry, args):
@@ -226,9 +229,11 @@ def extended_kalman_smoother(
         smoothed_mean_next, smoothed_cov_next = carry
         t, filtered_mean, filtered_cov = args
 
+        f = _get_params(params.dynamics_function, 2, t)
+        F = jacfwd(f)
+        f, F = (_process_fn(fn, inputs) for fn in (f, F))
         # Get parameters and inputs for time index t
         Q = _get_params(params.dynamics_covariance, 2, t)
-        R = _get_params(params.emission_covariance, 2, t)
         u = inputs[t]
         F_x = F(filtered_mean, u)
 
