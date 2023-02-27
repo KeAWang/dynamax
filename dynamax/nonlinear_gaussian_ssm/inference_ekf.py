@@ -5,6 +5,7 @@ from jax import jacfwd
 from tensorflow_probability.substrates.jax.distributions import MultivariateNormalFullCovariance as MVN
 from jaxtyping import Array, Float
 from typing import List, Optional
+from functools import partial
 
 from dynamax.utils.utils import psd_solve
 from dynamax.nonlinear_gaussian_ssm.models import ParamsNLGSSM
@@ -13,6 +14,7 @@ from dynamax.types import PRNGKey
 
 # Helper functions
 # _get_params = lambda x, dim, t: x[t] if x.ndim == dim + 1 else x
+# TODO: handle list of parameters, one per timestep
 def _get_params(x, dim, t):
     if callable(x):
         return x(t)
@@ -26,7 +28,7 @@ _process_fn = lambda f, u: (lambda x, y: f(x)) if u is None else f
 _process_input = lambda x, y: jnp.zeros((y,1)) if x is None else x
 
 
-def _predict(m, P, f, F, Q, u):
+def _predict(t, m, P, f, F, Q, u):
     r"""Predict next mean and covariance using first-order additive EKF
 
         p(z_{t+1}) = \int N(z_t | m, P) N(z_{t+1} | f(z_t, u), Q)
@@ -44,13 +46,13 @@ def _predict(m, P, f, F, Q, u):
         mu_pred (D_hid,): predicted mean.
         Sigma_pred (D_hid,D_hid): predicted covariance.
     """
-    F_x = F(m, u)
-    mu_pred = f(m, u)
+    F_x = F(t, m, u)
+    mu_pred = f(t, m, u)
     Sigma_pred = F_x @ P @ F_x.T + Q
     return mu_pred, Sigma_pred
 
 
-def _condition_on(m, P, h, H, R, u, y, num_iter):
+def _condition_on(t, m, P, h, H, R, u, y, num_iter):
     r"""Condition a Gaussian potential on a new observation.
 
        p(z_t | y_t, u_t, y_{1:t-1}, u_{1:t-1})
@@ -74,6 +76,7 @@ def _condition_on(m, P, h, H, R, u, y, num_iter):
          u (D_in,): inputs.
          y (D_obs,): observation.
          num_iter (int): number of re-linearizations around posterior for update step.
+            Should be a static argument if jitting this function, since it is used in a lax.scan
 
      Returns:
          mu_cond (D_hid,): filtered mean.
@@ -81,11 +84,11 @@ def _condition_on(m, P, h, H, R, u, y, num_iter):
     """
     def _step(carry, _):
         prior_mean, prior_cov = carry
-        H_x = H(prior_mean, u)
+        H_x = H(t, prior_mean, u)
         S = R + H_x @ prior_cov @ H_x.T
         K = psd_solve(S, H_x @ prior_cov).T
         posterior_cov = prior_cov - K @ S @ K.T
-        posterior_mean = prior_mean + K @ (y - h(prior_mean, u))
+        posterior_mean = prior_mean + K @ (y - h(t, prior_mean, u))
         return (posterior_mean, posterior_cov), None
 
     # Iterate re-linearization over posterior mean and covariance
@@ -108,6 +111,7 @@ def extended_kalman_filter(
         params: model parameters.
         emissions: observation sequence.
         num_iter: number of linearizations around posterior for update step (default 1).
+            Should be a static argument if jitting this function, since it is used in a lax.scan when conditioning
         inputs: optional array of inputs.
         output_fields: list of fields to return in posterior object.
             These can take the values "filtered_means", "filtered_covariances",
@@ -121,19 +125,14 @@ def extended_kalman_filter(
 
     inputs = _process_input(inputs, num_timesteps)
 
+    # Dynamics and emission functions and their Jacobians
+    f = params.dynamics_function  # Assume f(timestep, x) or f(timestep, x, u)
+    h = params.emission_function # Assume h(timestep, x) or h(timestep, x, u)
+    F, H = jacfwd(f, 1), jacfwd(h, 1)
+    f, h, F, H = (_process_fn(fn, inputs) for fn in (f, h, F, H))
+
     def _step(carry, t):
         ll, pred_mean, pred_cov = carry
-
-        # Dynamics and emission functions and their Jacobians
-        # TODO: make _get_params more robust.
-        # if dynamics_function has 1 argument, we should assume it's the time argument
-        # if it has two arguments, we should assume it takes in x, u
-        # otherwise if it's not a callable, we should index it
-        # same for emission function
-        f = _get_params(params.dynamics_function, 2, t)
-        h = _get_params(params.emission_function, 2, t)
-        F, H = jacfwd(f), jacfwd(h)
-        f, h, F, H = (_process_fn(fn, inputs) for fn in (f, h, F, H))
         # Get parameters and inputs for time index t
         Q = _get_params(params.dynamics_covariance, 2, t)
         R = _get_params(params.emission_covariance, 2, t)
@@ -141,14 +140,14 @@ def extended_kalman_filter(
         y = emissions[t]
 
         # Update the log likelihood
-        H_x = H(pred_mean, u)
-        ll += MVN(h(pred_mean, u), H_x @ pred_cov @ H_x.T + R).log_prob(jnp.atleast_1d(y))
+        H_x = H(t, pred_mean, u)
+        ll += MVN(h(t, pred_mean, u), H_x @ pred_cov @ H_x.T + R).log_prob(jnp.atleast_1d(y))
 
         # Condition on this emission
-        filtered_mean, filtered_cov = _condition_on(pred_mean, pred_cov, h, H, R, u, y, num_iter)
+        filtered_mean, filtered_cov = _condition_on(t, pred_mean, pred_cov, h, H, R, u, y, num_iter)
 
         # Predict the next state
-        pred_mean, pred_cov = _predict(filtered_mean, filtered_cov, f, F, Q, u)
+        pred_mean, pred_cov = _predict(t, filtered_mean, filtered_cov, f, F, Q, u)
 
         # Build carry and output states
         carry = (ll, pred_mean, pred_cov)
@@ -223,6 +222,10 @@ def extended_kalman_smoother(
     filtered_means = filtered_posterior.filtered_means
     filtered_covs = filtered_posterior.filtered_covariances
 
+    f = params.dynamics_function  # Assume f(timestep, x) or f(timestep, x, u)
+    F = jacfwd(f, 1)
+    f, F = (_process_fn(fn, inputs) for fn in (f, F))
+
     # Dynamics and emission functions and their Jacobians
     inputs = _process_input(inputs, num_timesteps)
 
@@ -231,16 +234,13 @@ def extended_kalman_smoother(
         smoothed_mean_next, smoothed_cov_next = carry
         t, filtered_mean, filtered_cov = args
 
-        f = _get_params(params.dynamics_function, 2, t)
-        F = jacfwd(f)
-        f, F = (_process_fn(fn, inputs) for fn in (f, F))
         # Get parameters and inputs for time index t
         Q = _get_params(params.dynamics_covariance, 2, t)
         u = inputs[t]
-        F_x = F(filtered_mean, u)
+        F_x = F(t, filtered_mean, u)
 
         # Prediction step
-        m_pred = f(filtered_mean, u)
+        m_pred = f(t, filtered_mean, u)
         S_pred = Q + F_x @ filtered_cov @ F_x.T
         G = psd_solve(S_pred, F_x @ filtered_cov).T
 
@@ -309,6 +309,7 @@ def extended_kalman_posterior_sample(
         params: parameters.
         emissions: sequence of observations.
         num_iter (int): number of re-linearizations around posterior for update step.
+            Should be static if jitting this function, since it is used in a lax.scan when conditioning
         inputs: optional sequence of inptus.
 
     Returns:
@@ -321,20 +322,21 @@ def extended_kalman_posterior_sample(
     filtered_posterior = extended_kalman_filter(params, emissions, num_iter, inputs)
     ll, filtered_means, filtered_covs, *_ = filtered_posterior
 
+    f = params.dynamics_function  # Assume f(timestep, x) or f(timestep, x, u)
+    F = jacfwd(f, 1)
+    f, F = (_process_fn(fn, inputs) for fn in (f, F))
+
     # Sample backward in time
     def _step(carry, args):
         next_state = carry
         key, filtered_mean, filtered_cov, t = args
 
         # Shorthand: get parameters and inputs for time index t
-        f = _get_params(params.dynamics_function, 2, t)
-        F = jacfwd(f)
-        f, F = (_process_fn(fn, inputs) for fn in (f, F))
         Q = _get_params(params.dynamics_covariance, 2, t)
         u = inputs[t]
 
         # Condition on next state
-        smoothed_mean, smoothed_cov = _condition_on(filtered_mean, filtered_cov, f, F, Q, u, next_state, num_iter)
+        smoothed_mean, smoothed_cov = _condition_on(t, filtered_mean, filtered_cov, f, F, Q, u, next_state, num_iter)
         state = MVN(smoothed_mean, smoothed_cov).sample(seed=key)
         return state, state
 

@@ -1,4 +1,4 @@
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PyTree
 from typing import NamedTuple, Optional, Union, Callable
 import tensorflow_probability.substrates.jax as tfp
 from tensorflow_probability.substrates.jax.distributions import MultivariateNormalFullCovariance as MVN
@@ -10,10 +10,11 @@ tfd = tfp.distributions
 tfb = tfp.bijectors
 
 
-FnStateToState = Callable[ [Float[Array, "state_dim"]], Float[Array, "state_dim"]]
-FnStateAndInputToState = Callable[ [Float[Array, "state_dim"], Float[Array, "input_dim"]], Float[Array, "state_dim"]]
-FnStateToEmission = Callable[ [Float[Array, "state_dim"]], Float[Array, "emission_dim"]]
-FnStateAndInputToEmission = Callable[ [Float[Array, "state_dim"], Float[Array, "input_dim"] ], Float[Array, "emission_dim"]]
+Timestep = int
+FnStateToState = Callable[ [Timestep, Float[Array, "state_dim"]], Float[Array, "state_dim"]]
+FnStateAndInputToState = Callable[ [Timestep, Float[Array, "state_dim"], Float[Array, "input_dim"]], Float[Array, "state_dim"]]
+FnStateToEmission = Callable[ [Timestep, Float[Array, "state_dim"]], Float[Array, "emission_dim"]]
+FnStateAndInputToEmission = Callable[ [Timestep, Float[Array, "state_dim"], Float[Array, "input_dim"] ], Float[Array, "emission_dim"]]
 
 
 class ParamsNLGSSM(NamedTuple):
