@@ -128,7 +128,8 @@ def extended_kalman_filter(
     # Dynamics and emission functions and their Jacobians
     f = params.dynamics_function  # Assume f(timestep, x) or f(timestep, x, u)
     h = params.emission_function # Assume h(timestep, x) or h(timestep, x, u)
-    F, H = jacfwd(f, 1), jacfwd(h, 1)
+    F = params.dynamics_jacobian if params.dynamics_jacobian is not None else jacfwd(f, 1)
+    H = params.emission_jacobian if params.emission_jacobian is not None else jacfwd(h, 1)
     f, h, F, H = (_process_fn(fn, inputs) for fn in (f, h, F, H))
 
     def _step(carry, t):
@@ -223,7 +224,7 @@ def extended_kalman_smoother(
     filtered_covs = filtered_posterior.filtered_covariances
 
     f = params.dynamics_function  # Assume f(timestep, x) or f(timestep, x, u)
-    F = jacfwd(f, 1)
+    F = params.dynamics_jacobian if params.dynamics_jacobian is not None else jacfwd(f, 1)
     f, F = (_process_fn(fn, inputs) for fn in (f, F))
 
     # Dynamics and emission functions and their Jacobians
@@ -323,7 +324,7 @@ def extended_kalman_posterior_sample(
     ll, filtered_means, filtered_covs, *_ = filtered_posterior
 
     f = params.dynamics_function  # Assume f(timestep, x) or f(timestep, x, u)
-    F = jacfwd(f, 1)
+    F = params.dynamics_jacobian if params.dynamics_jacobian is not None else jacfwd(f, 1)
     f, F = (_process_fn(fn, inputs) for fn in (f, F))
 
     # Sample backward in time

@@ -41,6 +41,8 @@ class ParamsNLGSSM(NamedTuple):
     dynamics_covariance: Float[Array, "state_dim state_dim"]
     emission_function: Union[FnStateToEmission, FnStateAndInputToEmission]
     emission_covariance: Float[Array, "emission_dim emission_dim"]
+    dynamics_jacobian: Optional[Union[FnStateToState, FnStateAndInputToState]] = None
+    emission_jacobian: Optional[Union[FnStateToEmission, FnStateAndInputToEmission]] = None
 
 
 class NonlinearGaussianSSM(SSM):
