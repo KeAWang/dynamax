@@ -1,3 +1,4 @@
+from jax.tree_util import Partial
 import jax.numpy as jnp
 import jax.random as jr
 from jax import lax
@@ -82,6 +83,7 @@ def _condition_on(t, m, P, h, H, R, u, y, num_iter):
          mu_cond (D_hid,): filtered mean.
          Sigma_cond (D_hid,D_hid): filtered covariance.
     """
+    num_iter = num_iter.shape[0]
     def _step(carry, _):
         prior_mean, prior_cov = carry
         H_x = H(t, prior_mean, u)
@@ -130,7 +132,10 @@ def extended_kalman_filter(
     h = params.emission_function # Assume h(timestep, x) or h(timestep, x, u)
     F = params.dynamics_jacobian if params.dynamics_jacobian is not None else jacfwd(f, 1)
     H = params.emission_jacobian if params.emission_jacobian is not None else jacfwd(h, 1)
-    f, h, F, H = (_process_fn(fn, inputs) for fn in (f, h, F, H))
+    f, h, F, H = (Partial(_process_fn(fn, inputs)) for fn in (f, h, F, H))  # Wrap functions with Partial since it'll be passed through jitted functions 
+
+    no_update = lambda t, m, P, h, H, R, u, y, num_iter: (m, P)
+    empty = jnp.empty((num_iter, 0))  # need this to pass num_iter as a static arg to lax.cond
 
     def _step(carry, t):
         ll, pred_mean, pred_cov = carry
@@ -145,7 +150,10 @@ def extended_kalman_filter(
         ll += MVN(h(t, pred_mean, u), H_x @ pred_cov @ H_x.T + R).log_prob(jnp.atleast_1d(y))
 
         # Condition on this emission
-        filtered_mean, filtered_cov = _condition_on(t, pred_mean, pred_cov, h, H, R, u, y, num_iter)
+        filtered_mean, filtered_cov = lax.cond(
+            jnp.any(jnp.isnan(y)), no_update, _condition_on,
+            t, pred_mean, pred_cov, h, H, R, u, y, empty,
+        )
 
         # Predict the next state
         pred_mean, pred_cov = _predict(t, filtered_mean, filtered_cov, f, F, Q, u)
@@ -327,6 +335,7 @@ def extended_kalman_posterior_sample(
     F = params.dynamics_jacobian if params.dynamics_jacobian is not None else jacfwd(f, 1)
     f, F = (_process_fn(fn, inputs) for fn in (f, F))
 
+    empty = jnp.empty((num_iter, 0))  # need this to pass num_iter as a static arg to lax.cond
     # Sample backward in time
     def _step(carry, args):
         next_state = carry
@@ -337,7 +346,7 @@ def extended_kalman_posterior_sample(
         u = inputs[t]
 
         # Condition on next state
-        smoothed_mean, smoothed_cov = _condition_on(t, filtered_mean, filtered_cov, f, F, Q, u, next_state, num_iter)
+        smoothed_mean, smoothed_cov = _condition_on(t, filtered_mean, filtered_cov, f, F, Q, u, next_state, empty)
         state = MVN(smoothed_mean, smoothed_cov).sample(seed=key)
         return state, state
 
