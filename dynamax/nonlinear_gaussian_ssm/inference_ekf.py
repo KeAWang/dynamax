@@ -98,6 +98,8 @@ def _condition_on(t, m, P, h, H, R, u, y, num_iter):
     (mu_cond, Sigma_cond), _ = lax.scan(_step, carry, jnp.arange(num_iter))
     return mu_cond, Sigma_cond
 
+def _no_update(t, m, P, h, H, R, u, y, num_iter):
+    return m, P
 
 def extended_kalman_filter(
     params: ParamsNLGSSM,
@@ -134,7 +136,6 @@ def extended_kalman_filter(
     H = params.emission_jacobian if params.emission_jacobian is not None else jacfwd(h, 1)
     f, h, F, H = (Partial(_process_fn(fn, inputs)) for fn in (f, h, F, H))  # Wrap functions with Partial since it'll be passed through jitted functions 
 
-    no_update = lambda t, m, P, h, H, R, u, y, num_iter: (m, P)
     empty = jnp.empty((num_iter, 0))  # need this to pass num_iter as a static arg to lax.cond
 
     def _step(carry, t):
@@ -145,13 +146,16 @@ def extended_kalman_filter(
         u = inputs[t]
         y = emissions[t]
 
+        y = jnp.atleast_1d(y)
+        is_missing= jnp.any(jnp.isnan(y))  # treat y as missing if any of its dimensions are missing; we can generalize this to arbitrary missingness patterns in the future
+        y = jnp.where(is_missing, jnp.zeros_like(y), y)  # replace with dummy value if missing, to prevent nan gradients
         # Update the log likelihood
         H_x = H(t, pred_mean, u)
-        ll += MVN(h(t, pred_mean, u), H_x @ pred_cov @ H_x.T + R).log_prob(jnp.atleast_1d(y))
+        ll += jnp.where(is_missing, 0., MVN(h(t, pred_mean, u), H_x @ pred_cov @ H_x.T + R).log_prob(y))
 
         # Condition on this emission
         filtered_mean, filtered_cov = lax.cond(
-            jnp.any(jnp.isnan(y)), no_update, _condition_on,
+            is_missing, _no_update, _condition_on,
             t, pred_mean, pred_cov, h, H, R, u, y, empty,
         )
 
