@@ -5,7 +5,7 @@ from jax import lax
 from jax import jacfwd
 from tensorflow_probability.substrates.jax.distributions import MultivariateNormalFullCovariance as MVN
 from jaxtyping import Array, Float
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from functools import partial
 
 from dynamax.utils.utils import psd_solve
@@ -107,6 +107,7 @@ def extended_kalman_filter(
     num_iter: int = 1,
     inputs: Optional[Float[Array, "ntime input_dim"]] = None,
     output_fields: Optional[List[str]]=["filtered_means", "filtered_covariances", "predicted_means", "predicted_covariances"],
+    state_range: Optional[Tuple[Array, Array]] = None,
 ) -> PosteriorGSSMFiltered:
     r"""Run an (iterated) extended Kalman filter to produce the
     marginal likelihood and filtered state estimates.
@@ -135,8 +136,12 @@ def extended_kalman_filter(
     F = params.dynamics_jacobian if params.dynamics_jacobian is not None else jacfwd(f, 1)
     H = params.emission_jacobian if params.emission_jacobian is not None else jacfwd(h, 1)
     f, h, F, H = (Partial(_process_fn(fn, inputs)) for fn in (f, h, F, H))  # Wrap functions with Partial since it'll be passed through jitted functions 
+    # TODO: handle the case where these functions are callable PyTrees
 
     empty = jnp.empty((num_iter, 0))  # need this to pass num_iter as a static arg to lax.cond
+
+    if state_range is None:
+        state_range = (jnp.array([-jnp.inf], dtype=float), jnp.array([jnp.inf], dtype=float))
 
     def _step(carry, t):
         ll, pred_mean, pred_cov = carry
@@ -158,6 +163,7 @@ def extended_kalman_filter(
             is_missing, _no_update, _condition_on,
             t, pred_mean, pred_cov, h, H, R, u, y, empty,
         )
+        filtered_mean = jnp.clip(filtered_mean, a_min=state_range[0], a_max=state_range[1])
 
         # Predict the next state
         pred_mean, pred_cov = _predict(t, filtered_mean, filtered_cov, f, F, Q, u)
