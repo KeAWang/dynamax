@@ -195,7 +195,8 @@ def iterated_extended_kalman_filter(
     params: ParamsNLGSSM,
     emissions:  Float[Array, "ntime emission_dim"],
     num_iter: int = 2,
-    inputs: Optional[Float[Array, "ntime input_dim"]] = None
+    inputs: Optional[Float[Array, "ntime input_dim"]] = None,
+    state_range: Optional[Tuple[Array, Array]] = None,
 ) -> PosteriorGSSMFiltered:
     r"""Run an iterated extended Kalman filter to produce the
     marginal likelihood and filtered state estimates.
@@ -210,7 +211,7 @@ def iterated_extended_kalman_filter(
         post: posterior object.
 
     """
-    filtered_posterior = extended_kalman_filter(params, emissions, num_iter, inputs)
+    filtered_posterior = extended_kalman_filter(params, emissions, num_iter, inputs, state_range=state_range)
     return filtered_posterior
 
 
@@ -218,7 +219,8 @@ def extended_kalman_smoother(
     params: ParamsNLGSSM,
     emissions:  Float[Array, "ntime emission_dim"],
     filtered_posterior: Optional[PosteriorGSSMFiltered] = None,
-    inputs: Optional[Float[Array, "ntime input_dim"]] = None
+    inputs: Optional[Float[Array, "ntime input_dim"]] = None,
+    state_range: Optional[Tuple[Array, Array]] = None,
 ) -> PosteriorGSSMSmoothed:
     r"""Run an extended Kalman (RTS) smoother.
 
@@ -266,6 +268,7 @@ def extended_kalman_smoother(
         # Compute smoothed mean and covariance
         smoothed_mean = filtered_mean + G @ (smoothed_mean_next - m_pred)
         smoothed_cov = filtered_cov + G @ (smoothed_cov_next - S_pred) @ G.T
+        smoothed_mean = jnp.clip(smoothed_mean, a_min=state_range[0], a_max=state_range[1])
 
         return (smoothed_mean, smoothed_cov), (smoothed_mean, smoothed_cov)
 
