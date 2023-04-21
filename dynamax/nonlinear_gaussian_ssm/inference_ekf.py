@@ -98,9 +98,6 @@ def _condition_on(t, m, P, h, H, R, u, y, num_iter):
     (mu_cond, Sigma_cond), _ = lax.scan(_step, carry, jnp.arange(num_iter))
     return mu_cond, Sigma_cond
 
-def _no_update(t, m, P, h, H, R, u, y, num_iter):
-    return m, P
-
 def extended_kalman_filter(
     params: ParamsNLGSSM,
     emissions: Float[Array, "ntime emission_dim"],
@@ -152,15 +149,15 @@ def extended_kalman_filter(
         y = emissions[t]
 
         y = jnp.atleast_1d(y)
-        is_missing= jnp.any(jnp.isnan(y))  # treat y as missing if any of its dimensions are missing; we can generalize this to arbitrary missingness patterns in the future
+        is_missing = jnp.isnan(y)
+        R = R + jnp.diag(1e6 * is_missing)  # add large observation noise for the missing dimensions 
         y = jnp.where(is_missing, jnp.zeros_like(y), y)  # replace with dummy value if missing, to prevent nan gradients
         # Update the log likelihood
         H_x = H(t, pred_mean, u)
-        ll += jnp.where(is_missing, 0., MVN(h(t, pred_mean, u), H_x @ pred_cov @ H_x.T + R).log_prob(y))
+        ll += MVN(h(t, pred_mean, u), H_x @ pred_cov @ H_x.T + R).log_prob(y)
 
         # Condition on this emission
-        filtered_mean, filtered_cov = lax.cond(
-            is_missing, _no_update, _condition_on,
+        filtered_mean, filtered_cov = _condition_on(
             t, pred_mean, pred_cov, h, H, R, u, y, empty,
         )
         filtered_mean = jnp.clip(filtered_mean, a_min=state_range[0], a_max=state_range[1])
