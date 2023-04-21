@@ -149,16 +149,21 @@ def extended_kalman_filter(
         y = emissions[t]
 
         y = jnp.atleast_1d(y)
-        is_missing = jnp.isnan(y)
-        R = R + jnp.diag(1e6 * is_missing)  # add large observation noise for the missing dimensions 
-        y = jnp.where(is_missing, jnp.zeros_like(y), y)  # replace with dummy value if missing, to prevent nan gradients
+        missing = jnp.isnan(y)
+        not_missing = ~missing
+        R_ = jnp.where(jnp.diag(missing), 1.0, R * (not_missing)[:, None] * not_missing)  # dummy unit variance for missing dimensions, and mask covariances wrt missing dims
+        y = jnp.where(missing, jnp.zeros_like(y), y)  # replace with dummy value if missing, to prevent nan gradients
+        H_ = lambda *args: H(*args) * (not_missing)[:, None] 
+        h_ = lambda *args: jnp.where(missing, 0., h(*args))
         # Update the log likelihood
-        H_x = H(t, pred_mean, u)
-        ll += MVN(h(t, pred_mean, u), H_x @ pred_cov @ H_x.T + R).log_prob(y)
+        H_x = H_(t, pred_mean, u)
+        ll += MVN(h_(t, pred_mean, u), (H_x @ pred_cov @ H_x.T + R_)).log_prob(y)
+        ll -= -0.5 * jnp.log(2 * jnp.pi) * jnp.sum(missing)  # subtract constant term for missing dimensions
+
 
         # Condition on this emission
         filtered_mean, filtered_cov = _condition_on(
-            t, pred_mean, pred_cov, h, H, R, u, y, empty,
+            t, pred_mean, pred_cov, h_, H_, R_, u, y, empty,
         )
         filtered_mean = jnp.clip(filtered_mean, a_min=state_range[0], a_max=state_range[1])
 
