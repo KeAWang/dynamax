@@ -248,6 +248,8 @@ def extended_kalman_smoother(
     f = params.dynamics_function  # Assume f(timestep, x) or f(timestep, x, u)
     F = params.dynamics_jacobian if params.dynamics_jacobian is not None else jacfwd(f, 1)
     f, F = (_process_fn(fn, inputs) for fn in (f, F))
+    if state_range is None:
+        state_range = (-jnp.inf, jnp.inf)
 
     # Dynamics and emission functions and their Jacobians
     inputs = _process_input(inputs, num_timesteps)
