@@ -326,7 +326,8 @@ def extended_kalman_posterior_sample(
     params: ParamsNLGSSM,
     emissions:  Float[Array, "ntime emission_dim"],
     num_iter: int = 1,
-    inputs: Optional[Float[Array, "ntime input_dim"]]=None
+    inputs: Optional[Float[Array, "ntime input_dim"]]=None,
+    state_range: Optional[Tuple[Array, Array]] = None,
 ) -> Float[Array, "ntime state_dim"]:
     r"""Run forward-filtering, backward-sampling to draw samples from $p(z_{1:T} \mid y_{1:T}, u_{1:T})$.
 
@@ -351,6 +352,8 @@ def extended_kalman_posterior_sample(
     f = params.dynamics_function  # Assume f(timestep, x) or f(timestep, x, u)
     F = params.dynamics_jacobian if params.dynamics_jacobian is not None else jacfwd(f, 1)
     f, F = (_process_fn(fn, inputs) for fn in (f, F))
+    if state_range is None:
+        state_range = (-jnp.inf, jnp.inf)
 
     empty = jnp.empty((num_iter, 0))  # need this to pass num_iter as a static arg to lax.cond
     # Sample backward in time
@@ -364,6 +367,7 @@ def extended_kalman_posterior_sample(
 
         # Condition on next state
         smoothed_mean, smoothed_cov = _condition_on(t, filtered_mean, filtered_cov, f, F, Q, u, next_state, empty)
+        smoothed_mean = jnp.clip(smoothed_mean, a_min=state_range[0], a_max=state_range[1])
         state = MVN(smoothed_mean, smoothed_cov).sample(seed=key)
         return state, state
 
